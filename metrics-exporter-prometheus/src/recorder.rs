@@ -237,6 +237,115 @@ impl Inner {
         output
     }
 
+    fn render_with_map_fn(&self, fn_labels: impl Fn(Vec<String>) -> Option<Vec<String>>) -> String {
+        let Snapshot { mut counters, mut distributions, mut gauges } = self.get_recent_metrics();
+
+        let mut output = String::new();
+        let descriptions = self.descriptions.read().unwrap_or_else(PoisonError::into_inner);
+
+        for (name, mut by_labels) in counters.drain() {
+            if let Some(desc) = descriptions.get(name.as_str()) {
+                write_help_line(&mut output, name.as_str(), desc);
+            }
+
+            write_type_line(&mut output, name.as_str(), "counter");
+            for (labels, value) in by_labels.drain() {
+                if let Some(labels) = fn_labels(labels) {
+                    write_metric_line::<&str, u64>(&mut output, &name, None, &labels, None, value);
+                }
+            }
+            output.push('\n');
+        }
+
+        for (name, mut by_labels) in gauges.drain() {
+            if let Some(desc) = descriptions.get(name.as_str()) {
+                write_help_line(&mut output, name.as_str(), desc);
+            }
+
+            write_type_line(&mut output, name.as_str(), "gauge");
+            for (labels, value) in by_labels.drain() {
+                if let Some(labels) = fn_labels(labels) {
+                    write_metric_line::<&str, f64>(&mut output, &name, None, &labels, None, value);
+                }
+            }
+            output.push('\n');
+        }
+
+        for (name, mut by_labels) in distributions.drain() {
+            if let Some(desc) = descriptions.get(name.as_str()) {
+                write_help_line(&mut output, name.as_str(), desc);
+            }
+
+            let distribution_type = self.distribution_builder.get_distribution_type(name.as_str());
+            write_type_line(&mut output, name.as_str(), distribution_type);
+            for (labels, distribution) in by_labels.drain(..) {
+                if let Some(labels) = fn_labels(labels) {
+                    let (sum, count) = match distribution {
+                        Distribution::Summary(summary, quantiles, sum) => {
+                            let snapshot = summary.snapshot(Instant::now());
+                            for quantile in quantiles.iter() {
+                                let value = snapshot.quantile(quantile.value()).unwrap_or(0.0);
+                                write_metric_line(
+                                    &mut output,
+                                    &name,
+                                    None,
+                                    &labels,
+                                    Some(("quantile", quantile.value())),
+                                    value,
+                                );
+                            }
+
+                            (sum, summary.count() as u64)
+                        }
+                        Distribution::Histogram(histogram) => {
+                            for (le, count) in histogram.buckets() {
+                                write_metric_line(
+                                    &mut output,
+                                    &name,
+                                    Some("bucket"),
+                                    &labels,
+                                    Some(("le", le)),
+                                    count,
+                                );
+                            }
+                            write_metric_line(
+                                &mut output,
+                                &name,
+                                Some("bucket"),
+                                &labels,
+                                Some(("le", "+Inf")),
+                                histogram.count(),
+                            );
+
+                            (histogram.sum(), histogram.count())
+                        }
+                    };
+
+                    write_metric_line::<&str, f64>(
+                        &mut output,
+                        &name,
+                        Some("sum"),
+                        &labels,
+                        None,
+                        sum,
+                    );
+                    write_metric_line::<&str, u64>(
+                        &mut output,
+                        &name,
+                        Some("count"),
+                        &labels,
+                        None,
+                        count,
+                    );
+                }
+            }
+
+            output.push('\n');
+        }
+
+        output
+    }
+
     fn run_upkeep(&self) {
         self.drain_histograms_to_distributions();
     }
@@ -319,6 +428,13 @@ impl PrometheusHandle {
     /// the Prometheus exposition format.
     pub fn render(&self) -> String {
         self.inner.render()
+    }
+
+    pub fn render_with_map_fn(
+        &self,
+        fn_labels: impl Fn(Vec<String>) -> Option<Vec<String>>,
+    ) -> String {
+        self.inner.render_with_map_fn(fn_labels)
     }
 
     /// Performs upkeeping operations to ensure metrics held by recorder are up-to-date and do not
