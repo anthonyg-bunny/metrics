@@ -244,37 +244,56 @@ impl Inner {
         let descriptions = self.descriptions.read().unwrap_or_else(PoisonError::into_inner);
 
         for (name, mut by_labels) in counters.drain() {
-            if let Some(desc) = descriptions.get(name.as_str()) {
+            let unit = descriptions.get(name.as_str()).and_then(|(desc, unit)| {
                 write_help_line(&mut output, name.as_str(), desc);
-            }
+                *unit
+            });
 
             write_type_line(&mut output, name.as_str(), "counter");
             for (labels, value) in by_labels.drain() {
                 if let Some(labels) = fn_labels(labels) {
-                    write_metric_line::<&str, u64>(&mut output, &name, None, &labels, None, value);
+                    write_metric_line::<&str, u64>(
+                        &mut output,
+                        &name,
+                        None,
+                        &labels,
+                        None,
+                        value,
+                        unit.filter(|_| self.enable_unit_suffix),
+                    );
                 }
             }
             output.push('\n');
         }
 
         for (name, mut by_labels) in gauges.drain() {
-            if let Some(desc) = descriptions.get(name.as_str()) {
+            let unit = descriptions.get(name.as_str()).and_then(|(desc, unit)| {
                 write_help_line(&mut output, name.as_str(), desc);
-            }
+                *unit
+            });
 
             write_type_line(&mut output, name.as_str(), "gauge");
             for (labels, value) in by_labels.drain() {
                 if let Some(labels) = fn_labels(labels) {
-                    write_metric_line::<&str, f64>(&mut output, &name, None, &labels, None, value);
+                    write_metric_line::<&str, f64>(
+                        &mut output,
+                        &name,
+                        None,
+                        &labels,
+                        None,
+                        value,
+                        unit.filter(|_| self.enable_unit_suffix),
+                    );
                 }
             }
             output.push('\n');
         }
 
         for (name, mut by_labels) in distributions.drain() {
-            if let Some(desc) = descriptions.get(name.as_str()) {
+            let unit = descriptions.get(name.as_str()).and_then(|(desc, unit)| {
                 write_help_line(&mut output, name.as_str(), desc);
-            }
+                *unit
+            });
 
             let distribution_type = self.distribution_builder.get_distribution_type(name.as_str());
             write_type_line(&mut output, name.as_str(), distribution_type);
@@ -292,6 +311,7 @@ impl Inner {
                                     &labels,
                                     Some(("quantile", quantile.value())),
                                     value,
+                                    unit.filter(|_| self.enable_unit_suffix),
                                 );
                             }
 
@@ -306,6 +326,7 @@ impl Inner {
                                     &labels,
                                     Some(("le", le)),
                                     count,
+                                    unit.filter(|_| self.enable_unit_suffix),
                                 );
                             }
                             write_metric_line(
@@ -315,6 +336,7 @@ impl Inner {
                                 &labels,
                                 Some(("le", "+Inf")),
                                 histogram.count(),
+                                unit.filter(|_| self.enable_unit_suffix),
                             );
 
                             (histogram.sum(), histogram.count())
@@ -328,6 +350,7 @@ impl Inner {
                         &labels,
                         None,
                         sum,
+                        unit,
                     );
                     write_metric_line::<&str, u64>(
                         &mut output,
@@ -336,6 +359,7 @@ impl Inner {
                         &labels,
                         None,
                         count,
+                        unit,
                     );
                 }
             }
@@ -430,6 +454,7 @@ impl PrometheusHandle {
         self.inner.render()
     }
 
+    /// Render with map fn
     pub fn render_with_map_fn(
         &self,
         fn_labels: impl Fn(Vec<String>) -> Option<Vec<String>>,
